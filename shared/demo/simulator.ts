@@ -201,6 +201,8 @@ interface SimAgent {
   shelledThisTurn: boolean;
   /** Orquestração em andamento (coordenador): eventos no formato do transcript e sorteio próprio. */
   orch?: { events: OrchEvent[]; rng: () => number; byChild: Map<string, number>; topics: Map<number, string>; next: number };
+  /** Eventos de todas as orquestrações do coordenador (sobrevivem ao fim de cada uma: alimentam o histórico). */
+  orchEvents?: OrchEvent[];
   foregroundThisTurn: boolean;
   /** Codex: mensagens na fila da sessão (entram quando ela fica ociosa) e a partir de quando entram. */
   inbox?: string[];
@@ -634,7 +636,7 @@ export class DemoSimulator {
       startedAt: now,
       lastEventAt: now,
       statusSince: now,
-      stats: { toolCalls: 0, tokensIn: 0, tokensOut: 0, subagents: 0 },
+      stats: { toolCalls: 0, tokensIn: 0, tokensOut: 0, costUSD: 0, subagents: 0 },
       seed: hash32(id),
       background: rng() < 0.3,
     };
@@ -793,6 +795,7 @@ export class DemoSimulator {
   private orchEvent(a: SimAgent, e: OrchEvent): void {
     if (!a.orch) return;
     a.orch.events = pushOrchEvents(a.orch.events, [e]);
+    a.orchEvents = a.orch.events;
     const o = buildOrchestration(a.orch.events);
     if (o) a.info.orchestration = o;
     this.dirty = true;
@@ -807,7 +810,7 @@ export class DemoSimulator {
     const topics = ORCH_FRONTS.slice();
     const count = 3 + Math.floor(rng() * 3);
     const title = this.pick(ORCH_TITLES, rng);
-    a.orch = { events: [], rng, byChild: new Map(), topics: new Map(), next: 0 };
+    a.orch = { events: a.orchEvents ?? [], rng, byChild: new Map(), topics: new Map(), next: 0 };
     this.activity(a, now, SPECIAL.respond(`[orquestração] ${title}`));
     this.orchEvent(a, { t: 'start', at: now, title });
     for (let n = 1; n <= count; n++) {

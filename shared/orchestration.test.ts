@@ -158,6 +158,58 @@ describe('buildOrchestration', () => {
     expect(buildOrchestration([])).toBeUndefined();
   });
 
+  describe('histórico (previous)', () => {
+    /** Uma orquestração completa: título, frentes 1..n, aprovadas, fim. */
+    const run = (base: number, title: string, fronts: number, opts: { redoFront?: number } = {}): OrchEvent[] => {
+      const ev: OrchEvent[] = [{ t: 'start', at: base, title }];
+      for (let n = 1; n <= fronts; n++) ev.push(spawn(base + 1, `${title}-${n}`, n));
+      if (opts.redoFront) {
+        ev.push({ t: 'verdict', at: base + 2, n: opts.redoFront, ok: false });
+        ev.push(spawn(base + 3, `${title}-${opts.redoFront}-r2`, opts.redoFront));
+      }
+      for (let n = 1; n <= fronts; n++) ev.push({ t: 'verdict', at: base + 4, n, ok: true });
+      ev.push({ t: 'end', at: base + 5, summary: `${title} ok` });
+      return ev;
+    };
+
+    it('a atual não aparece em previous e sem anteriores o campo some', () => {
+      const o = buildOrchestration(run(1, 'A', 2))!;
+      expect(o.previous).toBeUndefined();
+    });
+
+    it('lista as anteriores, a mais recente primeiro, contando aprovadas e refeitas', () => {
+      const events = [...run(10, 'Primeira', 2), ...run(20, 'Segunda', 3, { redoFront: 2 }), ...run(30, 'Atual', 1)];
+      const o = buildOrchestration(events)!;
+      expect(o.title).toBe('Atual');
+      expect(o.previous).toEqual([
+        { title: 'Segunda', startedAt: 20, endedAt: 25, summary: 'Segunda ok', fronts: 3, approved: 3, redo: 1 },
+        { title: 'Primeira', startedAt: 10, endedAt: 15, summary: 'Primeira ok', fronts: 2, approved: 2, redo: 0 },
+      ]);
+      expect(o.previous!.some((p) => p.startedAt === o.startedAt)).toBe(false);
+    });
+
+    it('guarda no máximo 5 anteriores (as mais recentes)', () => {
+      const events: OrchEvent[] = [];
+      for (let i = 0; i < 8; i++) events.push(...run(100 * (i + 1), `O${i}`, 1));
+      const o = buildOrchestration(events)!;
+      expect(o.title).toBe('O7');
+      expect(o.previous).toHaveLength(5);
+      expect(o.previous!.map((p) => p.title)).toEqual(['O6', 'O5', 'O4', 'O3', 'O2']);
+    });
+
+    it('orquestrações sem frentes ficam fora do histórico', () => {
+      const events = [...run(10, 'Com frentes', 1), { t: 'start', at: 20, title: 'Vazia' } as OrchEvent, { t: 'end', at: 21 } as OrchEvent, ...run(30, 'Atual', 1)];
+      const o = buildOrchestration(events)!;
+      expect(o.previous!.map((p) => p.title)).toEqual(['Com frentes']);
+    });
+
+    it('um início novo ainda sem frentes mantém a anterior como atual', () => {
+      const o = buildOrchestration([...run(1, 'Velha', 1), ...run(10, 'Nova', 1), { t: 'start', at: 20, title: 'Futura' }])!;
+      expect(o.title).toBe('Nova');
+      expect(o.previous!.map((p) => p.title)).toEqual(['Velha']);
+    });
+  });
+
   it('pushOrchEvents guarda só os mais recentes', () => {
     let list: OrchEvent[] = [];
     for (let i = 0; i < MAX_ORCH_EVENTS + 5; i++) list = pushOrchEvents(list, [{ t: 'start', at: i }]);

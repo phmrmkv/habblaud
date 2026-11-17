@@ -11,7 +11,7 @@
 // Código puro (servidor e cliente). O estado guardado é uma lista de eventos; a visão é recalculada
 // a partir dela, o que permite juntar o começo do arquivo lido depois (basta concatenar as listas).
 
-import type { OrchestrationFront, OrchestrationInfo, OrchestrationLogEntry } from './types';
+import type { OrchestrationFront, OrchestrationInfo, OrchestrationLogEntry, OrchestrationSummary } from './types';
 import { maskSecrets, truncate } from './activity';
 
 export type OrchEvent =
@@ -25,6 +25,8 @@ export type OrchEvent =
 export const MAX_ORCH_EVENTS = 300;
 const MAX_LOG = 30;
 const MAX_FRONTS = 12;
+/** Quantas orquestrações anteriores o histórico mostra. */
+const MAX_PREVIOUS = 5;
 
 const SEP = String.raw`\s*[:\-–—]\s*`;
 const FRONT_RE = new RegExp(String.raw`^\s*(?:frente|front)\s+(\d{1,2})${SEP}(.+?)\s*$`, 'i');
@@ -202,6 +204,25 @@ export function buildOrchestration(
   const found = [...all].reverse().find((c) => c.fronts.size > 0);
   if (!found) return undefined;
   found.info.fronts = [...found.fronts.values()].sort((a, b) => a.n - b.n);
+  // Histórico: as anteriores a ela que tiveram frentes, da mais recente para a mais antiga.
+  const idx = all.indexOf(found);
+  const previous: OrchestrationSummary[] = [];
+  for (let i = idx - 1; i >= 0 && previous.length < MAX_PREVIOUS; i--) {
+    const c = all[i];
+    if (c.fronts.size === 0) continue;
+    const fronts = [...c.fronts.values()];
+    const s: OrchestrationSummary = {
+      startedAt: c.info.startedAt,
+      fronts: fronts.length,
+      approved: fronts.filter((f) => f.status === 'approved').length,
+      redo: fronts.filter((f) => f.round > 1).length,
+    };
+    if (c.info.title) s.title = c.info.title;
+    if (c.info.endedAt !== undefined) s.endedAt = c.info.endedAt;
+    if (c.info.summary) s.summary = c.info.summary;
+    previous.push(s);
+  }
+  if (previous.length) found.info.previous = previous;
   return found.info;
 }
 

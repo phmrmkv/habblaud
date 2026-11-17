@@ -231,6 +231,20 @@ export interface OrchestrationInfo {
   fronts: OrchestrationFront[];
   /** Eventos mais recentes, do mais antigo para o mais novo (no máximo 30). */
   log: OrchestrationLogEntry[];
+  /** Orquestrações anteriores que tiveram frentes (até 5, a mais recente primeiro). */
+  previous?: OrchestrationSummary[];
+}
+
+/** Resumo de uma orquestração anterior, para o histórico da gaveta. */
+export interface OrchestrationSummary {
+  title?: string;
+  startedAt: number;
+  endedAt?: number;
+  summary?: string;
+  fronts: number;
+  approved: number;
+  /** Frentes que passaram por mais de uma rodada. */
+  redo: number;
 }
 
 export interface RoomInfo {

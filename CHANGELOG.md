@@ -22,6 +22,10 @@ do meio (0.**3**.0).
   emitidas por comando de shell (`echo "[avaliação] Frente 2: aprovado — ok"`): a entrada das ferramentas fica no
   transcript como foi chamada, enquanto o texto da resposta pode ser gravado só como resumo. Tudo vem do
   transcript real. O modo demonstração (`?mock=1`) inclui orquestrações de exemplo.
+- **Histórico e custo na seção Orquestração.** A gaveta do coordenador ganha o bloco recolhível "Anteriores (N)" com
+  as até 5 orquestrações anteriores que tiveram frentes (título, quando começou e "X frentes · Y aprovadas · Z
+  refeitas"), e cada frente mostra os tokens e o custo em US$ do subagente ligado a ela, com o total das frentes no
+  cabeçalho da seção.
 
 ### Corrigido
 

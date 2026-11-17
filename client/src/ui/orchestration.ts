@@ -1,12 +1,12 @@
 // Seção "Orquestração" da gaveta do agente: o coordenador dividiu o trabalho em frentes (um subagente por
 // frente), avaliou cada entrega e pode ter pedido outra rodada. Os dados vêm de AgentInfo.orchestration,
 // montado no servidor a partir do transcript (shared/orchestration.ts).
-import type { AgentInfo, OrchestrationFront, OrchestrationInfo, OrchestrationLogEntry, OrchestrationStatus } from '../../../shared/types';
+import type { AgentInfo, AgentStats, OrchestrationFront, OrchestrationInfo, OrchestrationLogEntry, OrchestrationStatus, OrchestrationSummary } from '../../../shared/types';
 import { orchestrationCounts, orchestrationRound, parseFrontLabel } from '../../../shared/orchestration';
 import { tr } from '../../../shared/i18n';
 import type { UiContext } from './context';
 import { h, KeyedList, setAttr, setHidden, setText, setTitle, setVariant } from './dom';
-import { formatClock, plural, prettyModel, relativeTime } from './format';
+import { formatClock, formatTokens, formatUSD, plural, prettyModel, relativeTime } from './format';
 
 const LOG_SHOWN = 6;
 
@@ -70,10 +70,28 @@ function logText(e: OrchestrationLogEntry): string {
   }
 }
 
+/** "120 k tokens · US$ 0,12" (o custo só entra quando existe). */
+function costText(s: Pick<AgentStats, 'tokensIn' | 'tokensOut' | 'costUSD'>): string {
+  const tokens = tr('{0} tokens', [formatTokens(s.tokensIn + s.tokensOut)]);
+  return s.costUSD !== undefined ? `${tokens} · ${formatUSD(s.costUSD)}` : tokens;
+}
+
+/** "3 frentes · 2 aprovadas · 1 refeita" */
+function summaryCounts(p: OrchestrationSummary): string {
+  return [plural(p.fronts, tr('frente'), tr('frentes')), plural(p.approved, tr('aprovada'), tr('aprovadas')), plural(p.redo, tr('refeita'), tr('refeitas'))].join(' · ');
+}
+
+interface PrevRow extends HTMLElement {
+  _title: HTMLElement;
+  _when: HTMLElement;
+  _counts: HTMLElement;
+}
+
 interface FrontRow extends HTMLElement {
   _num: HTMLElement;
   _topic: HTMLElement;
   _meta: HTMLElement;
+  _cost: HTMLElement;
   _pill: HTMLElement;
   _reason: HTMLElement;
   _agentId?: string;
@@ -90,6 +108,12 @@ export class OrchestrationSection {
   private log: KeyedList<OrchestrationLogEntry & { key: string }>;
   private summary: HTMLElement;
   private subs = new Map<number, string>();
+  private subStats = new Map<number, AgentStats>();
+  private total: HTMLElement;
+  private prevBox: HTMLDetailsElement;
+  private prevTitle: HTMLElement;
+  private prev: KeyedList<OrchestrationSummary, PrevRow>;
+  private now = Date.now();
 
   constructor(private readonly ctx: UiContext) {
     const title = h('h3', { class: 'ui-sec__title', text: tr('Orquestração') });
@@ -97,7 +121,32 @@ export class OrchestrationSection {
     this.heading = h('p', { class: 'ui-orch__title' });
     this.phase = h('span', { class: 'ui-orch__phase' });
     this.counts = h('p', { class: 'ui-orch__counts' });
+    this.total = h('p', { class: 'ui-orch__total', hidden: true });
     this.strip = h('div', { class: 'ui-orch__strip', attrs: { 'aria-hidden': 'true' } });
+    this.prevTitle = h('summary', { class: 'ui-orch__prevsum' });
+    const prevList = h('ul', { class: 'ui-orch__prevlist' });
+    this.prevBox = h('details', { class: 'ui-orch__prev', hidden: true }, this.prevTitle, prevList);
+    this.prev = new KeyedList<OrchestrationSummary, PrevRow>(prevList, {
+      key: (p) => String(p.startedAt),
+      create: () => {
+        const title = h('span', { class: 'ui-orch__prevtitle' });
+        const when = h('span', { class: 'ui-orch__prevwhen' });
+        const counts = h('span', { class: 'ui-orch__prevcounts' });
+        const li = h('li', { class: 'ui-orch__previtem' }, h('span', { class: 'ui-orch__prevtop' }, title, when), counts) as unknown as PrevRow;
+        li._title = title;
+        li._when = when;
+        li._counts = counts;
+        return li;
+      },
+      update: (li, p) => {
+        const label = p.title ?? plural(p.fronts, tr('frente em paralelo'), tr('frentes em paralelo'));
+        setText(li._title, label);
+        setTitle(li._title, p.summary ? `${label} — ${p.summary}` : label);
+        setText(li._when, relativeTime(p.startedAt, this.now));
+        setText(li._counts, summaryCounts(p));
+      },
+      animate: false,
+    });
     this.summary = h('p', { class: 'ui-orch__summary', hidden: true });
     const list = h('ul', { class: 'ui-orch__fronts' });
     const logList = h('ol', { class: 'ui-orch__log' });
@@ -116,17 +165,20 @@ export class OrchestrationSection {
       'section',
       { class: 'ui-sec ui-orch', hidden: true },
       h('div', { class: 'ui-sec__head' }, title, this.extra),
-      h('div', { class: 'ui-orch__lead' }, h('div', { class: 'ui-orch__leadtop' }, this.heading, this.phase), this.counts, this.strip),
+      h('div', { class: 'ui-orch__lead' }, h('div', { class: 'ui-orch__leadtop' }, this.heading, this.phase), this.counts, this.total, this.strip),
       list,
       this.summary,
       logList,
+      this.prevBox,
     );
   }
 
   clear(): void {
     this.fronts.clear();
     this.log.clear();
+    this.prev.clear();
     this.subs.clear();
+    this.subStats.clear();
   }
 
   render(a: AgentInfo, agents: readonly AgentInfo[] | undefined, now: number): void {
@@ -135,7 +187,9 @@ export class OrchestrationSection {
     if (!o) return;
 
     // Subagente ainda no escritório para cada frente: o que começou por último (rodada mais recente).
+    this.now = now;
     this.subs.clear();
+    this.subStats.clear();
     const startedAt = new Map<number, number>();
     for (const s of agents ?? []) {
       if (s.parentId !== a.id) continue;
@@ -143,7 +197,30 @@ export class OrchestrationSection {
       if (!f || (startedAt.get(f.n) ?? -Infinity) > s.startedAt) continue;
       startedAt.set(f.n, s.startedAt);
       this.subs.set(f.n, s.id);
+      this.subStats.set(f.n, s.stats);
     }
+
+    // Total das frentes que têm subagente ligado (sem ele, não há o que somar).
+    let tokens = 0;
+    let cost = 0;
+    let hasCost = false;
+    for (const f of o.fronts) {
+      const st = this.subStats.get(f.n);
+      if (!st) continue;
+      tokens += st.tokensIn + st.tokensOut;
+      if (st.costUSD !== undefined) {
+        cost += st.costUSD;
+        hasCost = true;
+      }
+    }
+    const linked = this.subStats.size > 0 && o.fronts.some((f) => this.subStats.has(f.n));
+    setHidden(this.total, !linked);
+    setText(this.total, linked ? tr('Frentes: {0}', [costText({ tokensIn: tokens, tokensOut: 0, ...(hasCost ? { costUSD: cost } : {}) })]) : '');
+
+    const previous = o.previous ?? [];
+    setHidden(this.prevBox, previous.length === 0);
+    setText(this.prevTitle, tr('Anteriores ({0})', [previous.length]));
+    this.prev.sync(previous);
 
     const round = orchestrationRound(o);
     setText(this.extra, round > 1 ? tr('rodada {0}', [round]) : relativeTime(o.startedAt, now));
@@ -180,6 +257,7 @@ export class OrchestrationSection {
     const num = h('span', { class: 'ui-orch__num' });
     const topic = h('span', { class: 'ui-orch__topic' });
     const meta = h('span', { class: 'ui-orch__meta' });
+    const cost = h('span', { class: 'ui-orch__cost', hidden: true });
     const pill = h('span', { class: 'ui-orch__pill' });
     const reason = h('span', { class: 'ui-orch__reason', hidden: true });
     const go = () => {
@@ -200,12 +278,13 @@ export class OrchestrationSection {
         },
       },
       num,
-      h('span', { class: 'ui-orch__body' }, topic, meta, reason),
+      h('span', { class: 'ui-orch__body' }, topic, meta, cost, reason),
       pill,
     ) as unknown as FrontRow;
     row._num = num;
     row._topic = topic;
     row._meta = meta;
+    row._cost = cost;
     row._pill = pill;
     row._reason = reason;
     return row;
@@ -221,6 +300,9 @@ export class OrchestrationSection {
     setVariant(row, 'is-', f.status);
     setHidden(row._reason, !f.reason);
     setText(row._reason, f.reason ?? '');
+    const st = this.subStats.get(f.n);
+    setHidden(row._cost, !st);
+    setText(row._cost, st ? costText(st) : '');
     row._agentId = this.subs.get(f.n);
     const link = !!row._agentId;
     row.classList.toggle('is-link', link);
