@@ -161,7 +161,7 @@ export interface CommitResult {
   notices: Notice[];
 }
 
-type NoticeKind = 'arrive' | 'room' | 'wait' | 'deliver' | 'done' | 'leave' | 'shell' | 'shellDone' | 'github' | 'character';
+type NoticeKind = 'arrive' | 'move' | 'room' | 'wait' | 'deliver' | 'done' | 'leave' | 'shell' | 'shellDone' | 'github' | 'character';
 
 /** Pergunta ainda sem resposta (o balão dela já diz que o agente espera você). */
 function isOpenQuestion(a: Activity | undefined): boolean {
@@ -361,6 +361,36 @@ export class Office {
     const acc = this.deps.accountName(p.account);
     this.notice('arrive', p.id, 'info', tr('👋 {0} chegou em {1}{2}', [info.name, this.roomName(roomId), acc ? ` (${acc})` : '']), roomId);
     this.markDirty();
+  }
+
+  /**
+   * A sessão trocou de pasta de trabalho (no app do Claude): o agente principal muda de sala levando os subagentes,
+   * com o mesmo personagem, tarefas e histórico. A sala antiga some se ficar vazia. Devolve true se mudou.
+   */
+  moveMain(id: string, cwd: string): boolean {
+    const rec = this.agents.get(id);
+    if (!rec || rec.info.kind !== 'main') return false;
+    const roomId = normalizeCwd(cwd);
+    const from = rec.info.roomId;
+    if (roomId === from) return false;
+    this.ensureRoom(roomId, this.now());
+    for (const r of this.agents.values()) if (this.mainOf(r.info) === id) r.info.roomId = roomId;
+    const fromName = this.roomName(from);
+    this.pruneRooms();
+    this.notice('move', id, 'info', tr('🚶 {0} foi de {1} para {2}', [rec.info.name, fromName, this.roomName(roomId)]), roomId);
+    this.markDirty();
+    return true;
+  }
+
+  /** Id do agente principal dono de um agente (ele mesmo, se for principal). */
+  private mainOf(info: AgentInfo): string {
+    let cur = info;
+    for (let i = 0; i < 32 && cur.kind === 'sub' && cur.parentId; i++) {
+      const parent = this.agents.get(cur.parentId)?.info;
+      if (!parent) return cur.parentId;
+      cur = parent;
+    }
+    return cur.id;
   }
 
   /** Mesmo processo, sessão nova (/clear, /resume): o personagem continua, tarefas e números zeram. */
@@ -933,9 +963,7 @@ export class Office {
     // festa acabou / alarme expirou: o snapshot sai sem o efeito
     if (this.effects.prune(now)) this.markDirty();
     if (removed) {
-      const occupied = new Set([...this.agents.values()].map((r) => r.info.roomId));
-      for (const id of [...this.rooms.keys()]) if (!occupied.has(id)) this.rooms.delete(id);
-      this.recomputeRoomNames();
+      this.pruneRooms();
       this.markDirty();
     }
   }
@@ -1040,6 +1068,13 @@ export class Office {
       }
     }
     return out;
+  }
+
+  /** Tira as salas que ficaram sem ninguém. */
+  private pruneRooms(): void {
+    const occupied = new Set([...this.agents.values()].map((r) => r.info.roomId));
+    for (const id of [...this.rooms.keys()]) if (!occupied.has(id)) this.rooms.delete(id);
+    this.recomputeRoomNames();
   }
 
   private ensureRoom(roomId: string, now: number): void {

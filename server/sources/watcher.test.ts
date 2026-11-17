@@ -787,7 +787,11 @@ describe('ClaudeWatcher — sessão que troca de pasta (change_directory no app)
     renameSync(join(projectDir(CWD), 'sess-a'), join(projectDir(OTHER), 'sess-a'));
     const movedSub = join(projectDir(OTHER), 'sess-a', 'subagents', 'agent-f1.jsonl');
     appendLines(movedSub, [L.assistant([L.tool('e1', 'Edit', { file_path: `${OTHER}/src/Cart.tsx` })], { agentId: 'f1' })]);
-    appendLines(moved, [L.assistant([L.tool('r1', 'Read', { file_path: `${OTHER}/README.md` })])]);
+    // O registro ainda diz a pasta antiga; a linha mais recente vem de um `cd` no Bash (não é a pasta da sessão).
+    appendLines(moved, [
+      L.prompt('Agora no outro projeto', { cwd: OTHER }),
+      L.assistant([L.tool('r1', 'Read', { file_path: `${OTHER}/README.md` })], { cwd: '/tmp/build' }),
+    ]);
     c.advance(3_000);
     c.poll();
 
@@ -795,6 +799,12 @@ describe('ClaudeWatcher — sessão que troca de pasta (change_directory no app)
     expect(c.agent(id)!.activity?.text).toBe('Lendo README.md');
     expect(c.agent('sess-a:f1')!.activity?.text).toBe('Editando Cart.tsx');
     expect(c.agents().filter((a) => a.kind === 'main')).toHaveLength(1);
+    // Muda de sala levando o subagente; a sala antiga, vazia, some.
+    const main = c.agent(id)!;
+    expect(main.roomId).toBe(OTHER);
+    expect(c.agent('sess-a:f1')!.roomId).toBe(OTHER);
+    expect(c.office.commit().snapshot.rooms.map((r) => r.id)).toEqual([OTHER]);
+    expect(c.notices.at(-1)?.text).toBe(`🚶 ${main.name} foi de loja para outro`);
 
     appendLines(moved, [
       L.result('toolu_f', 'totais ok', { toolUseResult: { status: 'completed', agentId: 'f1' } }),
@@ -827,5 +837,31 @@ describe('ClaudeWatcher — sessão que troca de pasta (change_directory no app)
     c.poll();
     expect(c.watcher.transcriptPathOf(id)).toBe(copy);
     expect(c.agent(id)!.activity?.text).toBe('Lendo README.md');
+  });
+});
+
+describe('ClaudeWatcher — sala acompanha o cwd do registro', () => {
+  it('registro já com o cwd novo e transcript movido: muda de sala; antes do transcript mudar, não', () => {
+    const c = setup();
+    try {
+      writeLines(c.transcript('sess-a'), [L.prompt('Começa aqui', { at: c.now() - 5000, cwd: CWD })]);
+      c.openSession(100, 'sess-a');
+      c.watcher.boot();
+      const id = '.claude:100';
+      const OTHER = '/projetos/outro';
+      // Registro muda antes do arquivo: a sala espera o transcript chegar na pasta nova.
+      c.openSession(100, 'sess-a', { cwd: OTHER });
+      c.poll();
+      expect(c.agent(id)!.roomId).toBe(CWD);
+      const dest = join(c.dir, 'projects', encodeCwd(OTHER));
+      mkdirSync(dest, { recursive: true });
+      renameSync(c.transcript('sess-a'), join(dest, 'sess-a.jsonl'));
+      c.advance(3_000);
+      c.poll();
+      expect(c.agent(id)!.roomId).toBe(OTHER);
+    } finally {
+      c.watcher.stop();
+      c.tmp.cleanup();
+    }
   });
 });

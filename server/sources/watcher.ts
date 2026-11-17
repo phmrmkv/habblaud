@@ -7,7 +7,7 @@
 // abertas e nas pastas subagents/ dessas sessões (nunca no acervo de transcripts antigos).
 // fs.watch é só um acelerador (no Docker com bind mount do macOS os eventos podem não chegar).
 import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { SPECIAL } from '../../shared/activity';
 import type { Activity, AgentStatus, SourceInfo } from '../../shared/types';
 import type { AccountsService } from '../accounts/service';
@@ -135,6 +135,10 @@ interface SessionTracker {
   watchingSubs: boolean;
   /** Quando a sessão deixou de aparecer no registro. */
   missingSince?: number;
+  /** Pasta de trabalho da sala do agente (muda quando a sessão troca de pasta no app). */
+  roomCwd: string;
+  /** Tamanho do transcript na última procura sem sucesso pelo cwd da pasta nova (só procura de novo se crescer). */
+  roomCheckSize?: number;
   /** Desde quando o registro (de uma versão que grava "shell") diz "idle". */
   idleSince?: number;
 }
@@ -334,6 +338,7 @@ export class ClaudeWatcher implements AgentSource {
     }
     t.entry = entry;
     this.pumpMain(t);
+    this.followRoom(t);
     this.scanSubagents(t, boot);
     this.pumpSubs(t);
     const now = this.now();
@@ -426,6 +431,7 @@ export class ClaudeWatcher implements AgentSource {
       scanned: false,
       watchers: [],
       watchingSubs: false,
+      roomCwd: entry.cwd,
     };
   }
 
@@ -517,6 +523,29 @@ export class ClaudeWatcher implements AgentSource {
     if (!missing && found.mtimeMs <= tail.mtimeMs) return false;
     this.relocate(t, found.path);
     return true;
+  }
+
+  /**
+   * O transcript mora numa pasta de projects/ que não é a da sala do agente (a sessão trocou de pasta): leva o agente
+   * para a sala do cwd novo. O cwd vem do registro ou, se ele ainda não mudou, das últimas linhas do transcript — só
+   * vale um cwd cuja pasta seja exatamente a do transcript (o `cd` do Bash também muda o cwd das linhas).
+   */
+  private followRoom(t: SessionTracker): void {
+    const tail = t.tail;
+    if (!tail || !t.transcriptPath) return;
+    const dir = basename(dirname(t.transcriptPath));
+    if (cwdLivesIn(t.roomCwd, dir)) return;
+    let cwd: string | undefined;
+    if (cwdLivesIn(t.entry.cwd, dir)) cwd = t.entry.cwd;
+    else {
+      if (t.roomCheckSize === tail.size) return;
+      t.roomCheckSize = tail.size;
+      cwd = lastCwdIn(t.transcriptPath, dir);
+    }
+    if (!cwd) return;
+    t.roomCwd = cwd;
+    delete t.roomCheckSize;
+    this.opts.office.moveMain(t.key, cwd);
   }
 
   private relocate(t: SessionTracker, path: string): void {
@@ -966,6 +995,43 @@ export class ClaudeWatcher implements AgentSource {
     t.watchers = [];
     t.watchingSubs = false;
   }
+}
+
+/** Nome máximo da pasta de projects/; acima disso o Claude Code corta e acrescenta um hash. */
+const MAX_PROJECT_DIR = 200;
+
+/** A pasta `dir` de projects/ é a do cwd `cwd`? (inclusive na forma abreviada dos caminhos longos) */
+export function cwdLivesIn(cwd: string, dir: string): boolean {
+  const enc = encodeCwd(cwd);
+  if (enc === dir) return true;
+  return enc.length > MAX_PROJECT_DIR && dir.startsWith(`${enc.slice(0, MAX_PROJECT_DIR)}-`);
+}
+
+/** O cwd mais recente gravado no fim do transcript que mora na pasta `dir`. */
+function lastCwdIn(path: string, dir: string): string | undefined {
+  try {
+    const tail = new FileTail(path);
+    tail.seekTail(PENDING_PROBE_BYTES);
+    const lines: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const r = tail.read();
+      lines.push(...r.lines);
+      if (!r.more) break;
+    }
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"cwd"')) continue;
+      let cwd: unknown;
+      try {
+        cwd = (JSON.parse(lines[i]) as { cwd?: unknown }).cwd;
+      } catch {
+        continue;
+      }
+      if (typeof cwd === 'string' && cwdLivesIn(cwd, dir)) return cwd;
+    }
+  } catch {
+    // ilegível agora: tenta quando crescer
+  }
+  return undefined;
 }
 
 /** Fim do transcript lido para saber se há ferramenta sem resultado (sem montar atividades). */

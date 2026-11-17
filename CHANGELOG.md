@@ -29,7 +29,9 @@ do meio (0.**3**.0).
   trabalho, o Claude Code move o transcript (e a pasta dos subagentes) para a pasta de projetos nova, e o Habblaud
   ficava lendo o caminho antigo: o agente e a orquestração congelavam no último estado. Agora o Habblaud acha o
   transcript pelo id da sessão na pasta nova e continua do ponto em que parou, com o mesmo personagem, as mesmas
-  tarefas e a mesma orquestração.
+  tarefas e a mesma orquestração. O agente também muda para a sala da pasta nova, levando os subagentes; o feed avisa
+  ("🚶 Fulano foi de loja para outro") e a sala antiga some quando fica vazia. Um `cd` no Bash não muda a sala: só
+  conta a pasta para onde o transcript foi.
 
 ## [1.0.3] - 2026-10-16
 

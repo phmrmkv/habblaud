@@ -1510,6 +1510,7 @@ export const EN: Readonly<Record<string, string>> = {
   "✋ {0} precisa de você em {1}: {2}": "✋ {0} needs you in {1}: {2}",
   "🏗️ Nova sala: {0}": "🏗️ New room: {0}",
   "👋 {0} chegou em {1}{2}": "👋 {0} arrived in {1}{2}",
+  "🚶 {0} foi de {1} para {2}": "🚶 {0} went from {1} to {2}",
   "🚪 {0} encerrou a sessão": "🚪 {0} ended the session",
   "Juntando os resultados da equipe": "Gathering the team's results",
   "✅ {0} concluiu em {1}": "✅ {0} finished in {1}",

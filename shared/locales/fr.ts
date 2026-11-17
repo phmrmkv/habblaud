@@ -2044,6 +2044,7 @@ export const FR: Readonly<Record<string, string>> = {
   "✋ {0} precisa de você em {1}: {2}": "✋ {0} a besoin de vous dans {1} : {2}",
   "🏗️ Nova sala: {0}": "🏗️ Nouvelle salle : {0}",
   "👋 {0} chegou em {1}{2}": "👋 {0} est arrivé dans {1}{2}",
+  "🚶 {0} foi de {1} para {2}": "🚶 {0} est passé de {1} à {2}",
   "🚪 {0} encerrou a sessão": "🚪 {0} a fermé la session",
   "Juntando os resultados da equipe": "Rassemble les résultats de l'équipe",
   "✅ {0} concluiu em {1}": "✅ {0} a terminé dans {1}",

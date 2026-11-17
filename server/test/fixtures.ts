@@ -14,6 +14,7 @@ export interface LineOpts {
   sessionId?: string;
   agentId?: string;
   gitBranch?: string;
+  cwd?: string;
 }
 
 function base(type: string, o: LineOpts): Record<string, unknown> {
@@ -22,7 +23,7 @@ function base(type: string, o: LineOpts): Record<string, unknown> {
     uuid: uuid(),
     timestamp: ts(o.at ?? Date.now()),
     sessionId: o.sessionId ?? 'sess-teste',
-    cwd: '/projetos/demo',
+    cwd: o.cwd ?? '/projetos/demo',
     gitBranch: o.gitBranch ?? 'main',
     isSidechain: !!o.agentId,
   };
