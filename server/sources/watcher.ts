@@ -13,6 +13,7 @@ import type { Activity, AgentStatus, SourceInfo } from '../../shared/types';
 import type { AccountsService } from '../accounts/service';
 import { errMsg, log } from '../log';
 import type { Office, TranscriptSummary } from '../model/office';
+import { buildOrchestration } from '../../shared/orchestration';
 import { compareVersions, registryStatus, RegistryReader, SHELL_STATUS_VERSION, type RegistryEntry } from './registry';
 import { SHELL_FALLBACK_MAX_AGE_MS, ShellTracker, toShellJob, type ShellFinish } from './shells';
 import type { AgentSource } from './source';
@@ -530,6 +531,8 @@ export class ClaudeWatcher implements AgentSource {
     if (s.gitBranch) summary.gitBranch = s.gitBranch;
     if (s.permissionMode) summary.permissionMode = s.permissionMode;
     if (s.lastAt !== undefined) summary.lastAt = s.lastAt;
+    const orchestration = s.orch.length ? buildOrchestration(s.orch) : undefined;
+    if (orchestration) summary.orchestration = orchestration;
     this.opts.office.applyTranscript(t.key, summary);
   }
 

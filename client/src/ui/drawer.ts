@@ -43,6 +43,7 @@ import { PermissionCard } from './permission';
 import { canRenameRoom } from './roomrename';
 import { accountChipLabel, accountProvider, CODEX_LIVE_HINT, codexApprovalLabel, providerOf } from './provider';
 import { ptyControllable } from './ptyapi';
+import { OrchestrationSection } from './orchestration';
 import { createAgentRow, updateAgentRow } from './rows';
 import { SocialSection } from './social';
 import { TERMINAL_UNAVAILABLE_HINT, type TerminalControl } from './terminal';
@@ -248,6 +249,7 @@ class AgentView {
   private tasksSec: ReturnType<typeof section>;
   private tasksBar: HTMLElement;
   private tasks: KeyedList<TaskItem>;
+  private orch: OrchestrationSection;
   private teamSec: ReturnType<typeof section>;
   private team: KeyedList<AgentInfo>;
   private teamEmpty: HTMLElement;
@@ -367,6 +369,8 @@ class AgentView {
     this.tasksSec = section(tr('Tarefas'), this.tasksBar, tasksList);
     this.tasks = new KeyedList<TaskItem>(tasksList, { key: (t) => t.id, create: createTaskItem, update: (li, t) => updateTaskItem(li, t) });
 
+    this.orch = new OrchestrationSection(ctx);
+
     const teamList = h('div', { class: 'ui-team' });
     this.teamEmpty = h('p', { class: 'ui-muted ui-small', text: tr('Nenhum subagente no momento.') });
     this.teamSec = section(tr('Subagentes'), teamList, this.teamEmpty);
@@ -418,6 +422,7 @@ class AgentView {
       this.shellBox,
       this.shellsSec.el,
       nowSec.el,
+      this.orch.el,
       this.msgSec.el,
       this.social.el,
       this.tasksSec.el,
@@ -441,6 +446,7 @@ class AgentView {
     this.timelineShown = TIMELINE_STEP;
     this.timeline.clear();
     this.tasks.clear();
+    this.orch.clear();
     this.team.clear();
     this.shells.clear();
     this.actDetails.open = false;
@@ -628,6 +634,9 @@ class AgentView {
     updateProgress(this.tasksBar, tp.completed, tp.total, tp.inProgress);
     setText(this.tasksSec.extra, `${tp.completed}/${tp.total}`);
     this.tasks.sync(a.tasks);
+
+    // Orquestração (coordenador com frentes, vereditos e rodadas).
+    this.orch.render(a, this.ctx.store.snapshot?.agents, now);
 
     // Equipe: subagentes (principal) ou responsável (sub).
     if (a.kind === 'main') {

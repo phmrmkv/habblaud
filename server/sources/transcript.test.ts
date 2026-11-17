@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { log } from '../log';
 import { L, tempDir } from '../test/fixtures';
 import { FileTail, MAX_LINE_BYTES } from './tail';
+import { buildOrchestration } from '../../shared/orchestration';
 import {
   applyTaskOp,
   createTranscriptState,
@@ -197,6 +198,65 @@ describe('parseLine — títulos, tarefas e números', () => {
     expect(s.model).toBe('claude-opus-teste');
     expect(s.gitBranch).toBe('feat/x');
     expect(s.permissionMode).toBe('auto');
+  });
+});
+
+describe('parseLine — orquestração', () => {
+  it('frentes, entrega em primeiro e segundo plano, vereditos e nova rodada', () => {
+    const s = createTranscriptState();
+    feed(s, [
+      L.assistant([
+        L.text('[orquestração] Revisar a central'),
+        L.tool('t1', 'Agent', { description: 'Frente 1: links', subagent_type: 'general-purpose', model: 'sonnet', prompt: '...' }),
+        L.tool('t2', 'Agent', { description: 'Frente 2: fichas', model: 'sonnet', prompt: '...', run_in_background: true }),
+        L.tool('t3', 'Agent', { description: 'Revisar código', prompt: '...' }),
+      ]),
+      L.result('t1', 'resumo', { toolUseResult: { status: 'completed', agentId: 'a1' } }),
+      L.result('t2', 'lançado', { toolUseResult: { status: 'async_launched', agentId: 'a2' } }),
+      L.notification('t2', 'completed', 'Agent "Frente 2: fichas" completed'),
+      L.assistant([L.text('[avaliação] Frente 1: aprovado — ok\n[avaliação] Frente 2: refazer — faltou a fonte')]),
+      L.assistant([L.tool('t4', 'Agent', { description: 'Frente 2: fichas', model: 'sonnet', prompt: '...' })]),
+    ]);
+    const o = buildOrchestration(s.orch)!;
+    expect(o.title).toBe('Revisar a central');
+    expect(o.fronts.map((f) => [f.n, f.status, f.round, f.model])).toEqual([
+      [1, 'approved', 1, 'sonnet'],
+      [2, 'working', 2, 'sonnet'],
+    ]);
+    expect(o.log.map((e) => e.kind)).toEqual(['start', 'spawn', 'spawn', 'delivered', 'delivered', 'approved', 'redo', 'spawn']);
+  });
+
+  it('vereditos por echo no Bash e entrega repetida (fila + mensagem) contada uma vez', () => {
+    const s = createTranscriptState();
+    feed(s, [
+      L.assistant([L.tool('t1', 'Agent', { description: 'Frente 1: links', prompt: '...', run_in_background: true })]),
+      L.result('t1', 'lançado', { toolUseResult: { status: 'async_launched', agentId: 'a1' } }),
+      L.notification('t1', 'completed', 'ok'),
+      L.notification('t1', 'completed', 'ok'),
+      L.assistant([L.tool('b1', 'Bash', { command: 'echo "[avaliação] Frente 1: aprovado — conferido"', description: 'veredito' })]),
+    ]);
+    expect(s.orch.filter((e) => e.t === 'delivered')).toHaveLength(1);
+    expect(buildOrchestration(s.orch)!.fronts[0]).toMatchObject({ status: 'approved', reason: 'conferido' });
+  });
+
+  it('entrega na janela final com a chamada no prefixo: casada no mergePrefix (revisão, frente 1)', () => {
+    const prefix = createTranscriptState();
+    feed(prefix, [L.assistant([L.tool('t1', 'Agent', { description: 'Frente 1: links', prompt: '...' })])]);
+    const state = createTranscriptState({ trackPrefix: true });
+    feed(state, [L.result('t1', 'resumo', { toolUseResult: { status: 'completed', agentId: 'a1' } })]);
+    expect(state.orch).toEqual([]);
+    mergePrefix(state, prefix);
+    expect(buildOrchestration(state.orch)!.fronts[0].status).toBe('delivered');
+    expect(state.orchUnmatched).toEqual([]);
+  });
+
+  it('mergePrefix junta os eventos do começo do arquivo antes dos da janela final', () => {
+    const prefix = createTranscriptState();
+    feed(prefix, [L.assistant([L.tool('t1', 'Agent', { description: 'Frente 1: links', prompt: '...' })])]);
+    const state = createTranscriptState({ trackPrefix: true });
+    feed(state, [L.assistant([L.text('[avaliação] Frente 1: aprovado')])]);
+    mergePrefix(state, prefix);
+    expect(buildOrchestration(state.orch)!.fronts[0].status).toBe('approved');
   });
 });
 

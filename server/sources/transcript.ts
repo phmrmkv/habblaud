@@ -9,6 +9,7 @@ import type { GitHubEvent } from '../../shared/github';
 import { detectGitHubNotification, detectGitHubResult, githubCallOf, type GitHubCall } from './github';
 import type { ShellStart } from './shells';
 import { LineBuffer, warnOversizedLine } from './tail';
+import { parseFrontLabel, parseOrchestrationCommand, parseOrchestrationText, pushOrchEvents, type OrchEvent } from '../../shared/orchestration';
 
 // ------------------------------------------------------------------ tarefas
 
@@ -153,6 +154,10 @@ export interface TranscriptState {
   fork?: 'expect-spawn' | 'expect-result';
   /** tool_use id da chamada herdada (o mesmo do meta.json do fork): não é uma ferramenta do fork. */
   inheritedSpawn?: string;
+  /** Eventos de orquestração (ver shared/orchestration.ts), do mais antigo para o mais novo. */
+  orch: OrchEvent[];
+  /** Entregas de Agent sem a chamada neste estado (ela pode estar no prefixo); casadas no mergePrefix. */
+  orchUnmatched: Array<Extract<OrchEvent, { t: 'delivered' }>>;
 }
 
 export function createTranscriptState(opts: { trackPrefix?: boolean } = {}): TranscriptState {
@@ -171,6 +176,8 @@ export function createTranscriptState(opts: { trackPrefix?: boolean } = {}): Tra
     usageByMsg: new Map(),
     firstMsgIds: opts.trackPrefix ? new Set() : null,
     seq: 0,
+    orch: [],
+    orchUnmatched: [],
   };
 }
 
@@ -308,6 +315,32 @@ class LineParser {
     this.out.changed = true;
   }
 
+  private orch(events: OrchEvent[]): void {
+    if (!events.length) return;
+    this.s.orch = pushOrchEvents(this.s.orch, events);
+    this.changed();
+  }
+
+  /**
+   * Entrega de uma frente. A chamada pode estar no começo do arquivo, lido depois em outro estado: sem a
+   * chamada aqui, a entrega espera em `orchUnmatched` e é casada no mergePrefix. A mesma entrega chega até
+   * três vezes (fila, anexo e mensagem): só a primeira conta.
+   */
+  private orchDelivered(toolUseId: string, error: boolean): void {
+    const s = this.s;
+    let spawned = false;
+    for (const e of s.orch) {
+      if ((e.t !== 'delivered' && e.t !== 'spawn') || e.toolUseId !== toolUseId) continue;
+      if (e.t === 'delivered') return;
+      spawned = true;
+    }
+    if (spawned) this.orch([{ t: 'delivered', at: this.at, toolUseId, error }]);
+    else if (!s.orchUnmatched.some((u) => u.toolUseId === toolUseId)) {
+      s.orchUnmatched.push({ t: 'delivered', at: this.at, toolUseId, error });
+      if (s.orchUnmatched.length > 64) s.orchUnmatched.shift();
+    }
+  }
+
   private taskOp(op: TaskOp): void {
     const s = this.s;
     if (op.op === 'replace') s.sawTaskReplace = true;
@@ -442,7 +475,10 @@ class LineParser {
         this.push(SPECIAL.think(), { suffix, msgId });
       } else if (b.type === 'text') {
         const text = str(b.text);
-        if (text) this.push(SPECIAL.respond(text), { suffix, msgId });
+        if (text) {
+          this.orch(parseOrchestrationText(text, this.at));
+          this.push(SPECIAL.respond(text), { suffix, msgId });
+        }
       } else if (b.type === 'tool_use') {
         this.toolUse(b, suffix, msgId);
       }
@@ -463,6 +499,9 @@ class LineParser {
     const gh = githubCallOf(name, input);
     if (gh) remember(s.github, id, gh, 64);
 
+    // Marcas de orquestração emitidas por shell (echo "[avaliação] ..."): ver parseOrchestrationCommand.
+    if (name === 'Bash' || name === 'PowerShell') this.orch(parseOrchestrationCommand(str(input.command), this.at));
+
     switch (name) {
       case 'Agent':
       case 'Task':
@@ -476,6 +515,11 @@ class LineParser {
         if (subagentType) spawn.subagentType = subagentType;
         if (agentName) spawn.name = agentName;
         this.out.signals.push({ type: 'spawn', spawn });
+        const front = name !== 'Workflow' ? parseFrontLabel(description) : undefined;
+        if (front) {
+          const model = str(input.model)?.slice(0, 40);
+          this.orch([model ? { t: 'spawn', at: this.at, toolUseId: id, ...front, model } : { t: 'spawn', at: this.at, toolUseId: id, ...front }]);
+        }
         break;
       }
       case 'TodoWrite':
@@ -591,6 +635,7 @@ class LineParser {
     if (n.status) sig.status = n.status;
     if (n.summary) sig.summary = n.summary;
     this.out.signals.push(sig);
+    if (n.toolUseId && n.status) this.orchDelivered(n.toolUseId, n.status !== 'completed');
     if (withActivity) this.push(SPECIAL.backgroundResult(n.summary));
     // CI lançado em segundo plano: o desfecho é o código de saída da notificação
     const gh = n.toolUseId ? this.s.github.get(n.toolUseId) : undefined;
@@ -633,6 +678,7 @@ class LineParser {
         if (taskId) sig.taskId = taskId;
         this.out.signals.push(sig);
       } else {
+        this.orchDelivered(id, isError);
         const sig: TranscriptSignal = { type: 'finished', toolUseId: id, error: isError };
         if (agentId) sig.agentId = agentId;
         if (runId) sig.runId = runId;
@@ -747,6 +793,8 @@ const PREFIX_MARKERS = [
   '"type":"fork-context-ref"',
   // Lançamentos em segundo plano (para casar a notificação de término com o subagente/workflow).
   '"async_launched"',
+  // Resultado de um Agent em primeiro plano (toolUseResult.agentId): a entrega de uma frente da orquestração.
+  '"agentId":"',
   // Shells em segundo plano: lançamento e término (para saber quais ainda rodam).
   '"backgroundTaskId"',
   '<task-notification>',
@@ -844,5 +892,13 @@ export function mergePrefix(state: TranscriptState, prefix: TranscriptState): vo
     if (prefix.stats.linesAdded !== undefined) state.stats.linesAdded = prefix.stats.linesAdded;
     if (prefix.stats.linesRemoved !== undefined) state.stats.linesRemoved = prefix.stats.linesRemoved;
   }
+  if (prefix.orch.length) {
+    // Entregas da janela final cuja chamada estava no prefixo (ver orchDelivered).
+    const spawned = new Set(prefix.orch.flatMap((e) => (e.t === 'spawn' ? [e.toolUseId] : [])));
+    const delivered = new Set(prefix.orch.flatMap((e) => (e.t === 'delivered' ? [e.toolUseId] : [])));
+    const late = state.orchUnmatched.filter((u) => spawned.has(u.toolUseId) && !delivered.has(u.toolUseId));
+    state.orch = pushOrchEvents(pushOrchEvents(prefix.orch, state.orch), late);
+  }
+  state.orchUnmatched = [];
   state.firstMsgIds = null;
 }

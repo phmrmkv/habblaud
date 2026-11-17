@@ -82,6 +82,38 @@ describe('DemoSimulator', () => {
   });
 });
 
+describe('DemoSimulator: orquestração', () => {
+  it('coordenador do Claude: frentes com Sonnet, vereditos, rodada 2 às vezes, e encerra', () => {
+    const sim = new DemoSimulator({ seed: 5, speed: 10, sessions: 6 }, 0);
+    let ended = 0;
+    let redone = false;
+    const titles = new Set<string>();
+    for (let t = 0; t < 3_600_000 / 2; t += 250) {
+      if (!sim.tick(t).changed) continue;
+      for (const a of sim.snapshot(t).agents) {
+        if (a.kind === 'sub' && /^Frente \d+: /.test(a.title ?? '')) {
+          expect(a.model).toBe('claude-sonnet-5-5');
+          titles.add(a.title!);
+        }
+        const o = a.orchestration;
+        if (!o) continue;
+        expect(a.kind).toBe('main');
+        expect(a.provider).toBeUndefined();
+        expect(o.fronts.length).toBeGreaterThanOrEqual(3);
+        expect(o.fronts.length).toBeLessThanOrEqual(5);
+        if (o.fronts.some((f) => f.round > 1)) redone = true;
+        if (o.endedAt !== undefined) {
+          expect(o.fronts.every((f) => f.status === 'approved')).toBe(true);
+          ended++;
+        }
+      }
+    }
+    expect(titles.size).toBeGreaterThan(0);
+    expect(ended).toBeGreaterThan(0);
+    expect(redone).toBe(true);
+  });
+});
+
 describe('DemoSimulator: Codex', () => {
   const MIN = 60_000;
 

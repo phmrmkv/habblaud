@@ -23,6 +23,22 @@ import { pickName } from '../names';
 import { demoGitHubEvent } from './github';
 import { demoCodexPermission, demoPermission, type DemoPermissionKind } from './permission';
 import { tr } from '../i18n';
+import { buildOrchestration, pushOrchEvents, type OrchEvent } from '../orchestration';
+
+/** Frentes de uma orquestração de demonstração (o coordenador escolhe de 3 a 5). */
+const ORCH_FRONTS = [
+  'Links do índice',
+  'Fichas dos projetos',
+  'ADRs dos repositórios',
+  'Skills nos pilotos',
+  'Quadros do GitHub',
+  'Testes de regressão',
+  'Textos da interface',
+];
+const ORCH_TITLES = ['Revisar a central de memória', 'Auditar o app antes do deploy', 'Preparar a versão 1.1'];
+const ORCH_REDO_REASONS = ['faltou citar a fonte', 'o teste não cobre o caso vazio', 'resposta sem evidência'];
+const ORCH_OK_REASONS = ['conferido', 'evidência suficiente', 'testes passaram'];
+const ORCH_SUB_MODEL = 'claude-sonnet-5-5';
 
 interface DemoProject {
   name: string;
@@ -183,6 +199,8 @@ interface SimAgent {
   foregroundUntil?: number;
   /** Já disparou shell (segundo plano) ou comando longo (primeiro plano) neste turno. */
   shelledThisTurn: boolean;
+  /** Orquestração em andamento (coordenador): eventos no formato do transcript e sorteio próprio. */
+  orch?: { events: OrchEvent[]; rng: () => number; byChild: Map<string, number>; topics: Map<number, string>; next: number };
   foregroundThisTurn: boolean;
   /** Codex: mensagens na fila da sessão (entram quando ela fica ociosa) e a partir de quando entram. */
   inbox?: string[];
@@ -589,13 +607,14 @@ export class DemoSimulator {
     this.dirty = true;
   }
 
-  private spawnSub(parent: SimAgent, now: number): void {
+  private spawnSub(parent: SimAgent, now: number, task?: string): void {
     const n = ++this.seq;
     const agentId = `a${Math.floor(this.rng() * 1e12).toString(16)}`;
     const id = `${parent.info.sessionId}:${agentId}`;
     const person = pickName(id, this.usedNames());
     const rng = mulberry32(hash32(id));
-    const desc = this.pick(SUB_TASKS, rng);
+    const picked = this.pick(SUB_TASKS, rng);
+    const desc = task ?? picked;
     const info: AgentInfo = {
       id,
       kind: 'sub',
@@ -689,6 +708,10 @@ export class DemoSimulator {
         }
         break;
       case 'delegating': {
+        if (a.orch) {
+          this.stepOrchestration(a, now);
+          break;
+        }
         const pending = a.children.filter((c) => this.agents.get(c)?.info.status === 'working');
         if (pending.length === 0) {
           a.phase = 'working';
@@ -745,8 +768,12 @@ export class DemoSimulator {
             this.askPermission(a, now);
           } else if (roll < 0.2 && a.children.length === 0) {
             const count = 2 + Math.floor(a.rng() * 3);
-            this.activity(a, now, describeTool('Agent', { description: tr('{0} frentes em paralelo', [count]), subagent_type: 'general-purpose' }));
-            for (let i = 0; i < count; i++) this.spawnSub(a, now);
+            if (a.info.provider !== 'codex') {
+              this.startOrchestration(a, now);
+            } else {
+              this.activity(a, now, describeTool('Agent', { description: tr('{0} frentes em paralelo', [count]), subagent_type: 'general-purpose' }));
+              for (let i = 0; i < count; i++) this.spawnSub(a, now);
+            }
             a.phase = 'delegating';
           } else if (roll < 0.2 + FOREGROUND_CHANCE && !a.foregroundThisTurn && a.actionsLeft > 0) {
             this.startForeground(a, now);
@@ -761,6 +788,74 @@ export class DemoSimulator {
     }
   }
 
+  // ---------------------------------------------------------------- orquestração
+
+  private orchEvent(a: SimAgent, e: OrchEvent): void {
+    if (!a.orch) return;
+    a.orch.events = pushOrchEvents(a.orch.events, [e]);
+    const o = buildOrchestration(a.orch.events);
+    if (o) a.info.orchestration = o;
+    this.dirty = true;
+  }
+
+  /** O coordenador divide o trabalho em frentes, cada uma com um Sonnet (como a skill "orquestrar"). */
+  private startOrchestration(a: SimAgent, now: number): void {
+    // Frentes, título e vereditos saem de um sorteio próprio (determinístico: id + instante). Os subagentes e as
+    // pausas ainda usam o sorteio principal, então o escritório depois da primeira orquestração difere das versões
+    // sem ela; a mesma semente continua gerando o mesmo escritório.
+    const rng = mulberry32(hash32(`${a.info.id}:orq:${now}`));
+    const topics = ORCH_FRONTS.slice();
+    const count = 3 + Math.floor(rng() * 3);
+    const title = this.pick(ORCH_TITLES, rng);
+    a.orch = { events: [], rng, byChild: new Map(), topics: new Map(), next: 0 };
+    this.activity(a, now, SPECIAL.respond(`[orquestração] ${title}`));
+    this.orchEvent(a, { t: 'start', at: now, title });
+    for (let n = 1; n <= count; n++) {
+      a.orch.topics.set(n, topics.splice(Math.floor(rng() * topics.length), 1)[0]);
+      this.spawnFront(a, n, now);
+    }
+  }
+
+  private spawnFront(a: SimAgent, n: number, now: number): void {
+    const orch = a.orch!;
+    const topic = orch.topics.get(n)!;
+    const description = `Frente ${n}: ${topic}`;
+    this.activity(a, now, describeTool('Agent', { description, subagent_type: 'general-purpose', prompt: topic }));
+    this.spawnSub(a, now, description);
+    const id = a.children[a.children.length - 1];
+    const sub = this.agents.get(id)!;
+    sub.info.model = ORCH_SUB_MODEL;
+    sub.info.role = 'general-purpose';
+    orch.byChild.set(id, n);
+    this.orchEvent(a, { t: 'spawn', at: now, toolUseId: id, n, topic, model: 'sonnet' });
+  }
+
+  /** Avalia as entregas (uma por vez, com pausa), pede outra rodada às vezes e encerra quando tudo passa. */
+  private stepOrchestration(a: SimAgent, now: number): void {
+    const orch = a.orch!;
+    const o = a.info.orchestration;
+    if (!o || now < orch.next) return;
+    const delivered = o.fronts.find((f) => f.status === 'delivered' && now - f.since >= 1_500 / this.speed);
+    if (delivered) {
+      const ok = delivered.round >= 2 || orch.rng() > 0.3;
+      const reason = this.pick(ok ? ORCH_OK_REASONS : ORCH_REDO_REASONS, orch.rng);
+      this.activity(a, now, SPECIAL.respond(`[avaliação] Frente ${delivered.n}: ${ok ? 'aprovado' : 'refazer'} — ${reason}`));
+      this.orchEvent(a, { t: 'verdict', at: now, n: delivered.n, ok, reason });
+      if (!ok) this.spawnFront(a, delivered.n, now);
+      orch.next = now + this.ms(1_200, 2_500);
+      return;
+    }
+    if (o.fronts.every((f) => f.status === 'approved' || f.status === 'failed')) {
+      const summary = tr('{0} frentes aprovadas', [o.fronts.length]);
+      this.activity(a, now, SPECIAL.respond(`[orquestração] concluída — ${summary}`));
+      this.orchEvent(a, { t: 'end', at: now, summary });
+      delete a.orch;
+      a.phase = 'working';
+      a.children = [];
+      a.nextActionAt = now + this.ms(2_000, 4_000);
+    }
+  }
+
   private stepSub(a: SimAgent, now: number): void {
     if (a.info.status !== 'working') return;
     if (now >= a.phaseUntil) {
@@ -769,6 +864,7 @@ export class DemoSimulator {
       a.removeAt = now + DONE_GRACE_MS;
       const parent = a.info.parentId ? this.agents.get(a.info.parentId) : undefined;
       this.notice(now, 'success', tr('📦 {0} entregou “{1}” para {2}', [a.info.name, a.info.title, parent?.info.name ?? tr('o agente')]), a.info.id, a.info.roomId);
+      if (parent?.orch?.byChild.has(a.info.id)) this.orchEvent(parent, { t: 'delivered', at: now, toolUseId: a.info.id, error: false });
       return;
     }
     if (now >= a.nextActionAt) {

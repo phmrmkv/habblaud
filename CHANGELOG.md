@@ -10,6 +10,18 @@ do meio (0.**3**.0).
 
 ## [Não lançado]
 
+### Adicionado
+
+- **Orquestração na gaveta do coordenador.** Quando um agente divide o trabalho em frentes (subagentes com a
+  descrição `Frente N: tema`) e avalia cada entrega com `[avaliação] Frente N: aprovado|refazer — motivo`, a gaveta
+  dele ganha a seção Orquestração: uma faixa com a cor de cada frente, a situação de cada uma (trabalhando, em
+  avaliação, aprovada, para refazer, com falha), o modelo pedido, a rodada e o motivo do veredito, além do registro
+  dos últimos passos. `[orquestração] título` abre e `[orquestração] concluída — resumo` encerra. Clicar numa frente
+  abre o subagente dela enquanto ele estiver no escritório (também pelo teclado). As marcas também valem quando
+  emitidas por comando de shell (`echo "[avaliação] Frente 2: aprovado — ok"`): a entrada das ferramentas fica no
+  transcript como foi chamada, enquanto o texto da resposta pode ser gravado só como resumo. Tudo vem do
+  transcript real. O modo demonstração (`?mock=1`) inclui orquestrações de exemplo.
+
 ## [1.0.3] - 2026-10-16
 
 ### Corrigido

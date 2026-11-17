@@ -12,6 +12,7 @@ import type {
   Notice,
   NoticeLevel,
   OfficeSnapshot,
+  OrchestrationInfo,
   PermissionDecision,
   PermissionRequestInfo,
   Provider,
@@ -94,6 +95,8 @@ export interface TranscriptSummary {
   /** Primeiro evento conhecido (subagentes: o início real, depois de ler o começo do arquivo). */
   firstAt?: number;
   lastAt?: number;
+  /** Orquestração conduzida pelo agente principal (ver shared/orchestration.ts). */
+  orchestration?: OrchestrationInfo;
 }
 
 export interface MainInput {
@@ -669,6 +672,7 @@ export class Office {
       changed = true;
     };
     if (info.kind === 'main') set('title', t.title);
+    if (info.kind === 'main') set('orchestration', t.orchestration);
     set('tasks', t.tasks.map((x) => ({ ...x })));
     set('stats', { ...t.stats });
     set('model', t.model);

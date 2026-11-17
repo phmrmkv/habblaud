@@ -186,6 +186,51 @@ export interface AgentInfo {
    * e perguntou pela caixa de entrada há pouco. Ver POST /api/messages.
    */
   canMessage?: boolean;
+  /**
+   * Orquestração mais recente conduzida por este agente (principal): ele dividiu o trabalho em frentes
+   * ("Frente N: tema" na descrição do Agent), avaliou cada entrega ("[avaliação] Frente N: aprovado|refazer")
+   * e pode ter pedido outra rodada. Montada só a partir do transcript real (ver shared/orchestration.ts).
+   */
+  orchestration?: OrchestrationInfo;
+}
+
+/** Situação de uma frente da orquestração. */
+export type OrchestrationStatus = 'working' | 'delivered' | 'approved' | 'redo' | 'failed';
+
+export interface OrchestrationFront {
+  /** Número da frente (o N de "Frente N"). */
+  n: number;
+  topic: string;
+  /** 1 = primeira entrega; cada nova chamada para a mesma frente soma uma rodada. */
+  round: number;
+  status: OrchestrationStatus;
+  /** Motivo do último veredito do coordenador. */
+  reason?: string;
+  /** Modelo pedido na chamada Agent (ex.: "sonnet"), quando informado. */
+  model?: string;
+  /** Epoch ms da última mudança de situação. */
+  since: number;
+}
+
+export interface OrchestrationLogEntry {
+  at: number;
+  kind: 'start' | 'spawn' | 'delivered' | 'approved' | 'redo' | 'failed' | 'end';
+  /** Frente envolvida (ausente em start/end). */
+  n?: number;
+  round?: number;
+  /** Título (start), tema (spawn), motivo (approved/redo) ou resumo (end). */
+  text?: string;
+}
+
+export interface OrchestrationInfo {
+  title?: string;
+  startedAt: number;
+  /** Presente quando o coordenador declarou a orquestração concluída. */
+  endedAt?: number;
+  summary?: string;
+  fronts: OrchestrationFront[];
+  /** Eventos mais recentes, do mais antigo para o mais novo (no máximo 30). */
+  log: OrchestrationLogEntry[];
 }
 
 export interface RoomInfo {
