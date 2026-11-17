@@ -15,7 +15,8 @@ do meio (0.**3**.0).
 - **Orquestração na gaveta do coordenador.** Quando um agente divide o trabalho em frentes (subagentes com a
   descrição `Frente N: tema`) e avalia cada entrega com `[avaliação] Frente N: aprovado|refazer — motivo`, a gaveta
   dele ganha a seção Orquestração: uma faixa com a cor de cada frente, a situação de cada uma (trabalhando, em
-  avaliação, aprovada, para refazer, com falha), o modelo pedido, a rodada e o motivo do veredito, além do registro
+  avaliação, aprovada, para refazer, com falha), o modelo com a versão que o subagente usou de fato (a chamada pede
+  só `sonnet`, e a frente mostra "Sonnet 5.5", como o coordenador), a rodada e o motivo do veredito, além do registro
   dos últimos passos. `[orquestração] título` abre e `[orquestração] concluída — resumo` encerra. Clicar numa frente
   abre o subagente dela enquanto ele estiver no escritório (também pelo teclado). As marcas também valem quando
   emitidas por comando de shell (`echo "[avaliação] Frente 2: aprovado — ok"`): a entrada das ferramentas fica no

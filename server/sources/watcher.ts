@@ -125,6 +125,8 @@ interface SessionTracker {
   /** Shells (Bash/Monitor) que o principal e os subagentes desta sessão estão esperando. */
   shells: ShellTracker;
   workflowAgents: number;
+  /** Modelo real de cada subagente, pela chamada (toolUseId) que o criou: o painel de orquestração mostra a versão. */
+  frontModels: Map<string, string>;
   lastSubScanAt: number;
   /** A pasta de subagentes já foi varrida ao menos uma vez. */
   scanned: boolean;
@@ -417,6 +419,7 @@ export class ClaudeWatcher implements AgentSource {
       journals: new Map(),
       shells: new ShellTracker(),
       workflowAgents: 0,
+      frontModels: new Map(),
       lastSubScanAt: 0,
       scanned: false,
       watchers: [],
@@ -531,7 +534,7 @@ export class ClaudeWatcher implements AgentSource {
     if (s.gitBranch) summary.gitBranch = s.gitBranch;
     if (s.permissionMode) summary.permissionMode = s.permissionMode;
     if (s.lastAt !== undefined) summary.lastAt = s.lastAt;
-    const orchestration = s.orch.length ? buildOrchestration(s.orch) : undefined;
+    const orchestration = s.orch.length ? buildOrchestration(s.orch, (id) => t.frontModels.get(id)) : undefined;
     if (orchestration) summary.orchestration = orchestration;
     this.opts.office.applyTranscript(t.key, summary);
   }
@@ -691,6 +694,9 @@ export class ClaudeWatcher implements AgentSource {
       if (known === undefined) {
         if (firstScan && now - mtimeMs > BOOT_RECENT_MS && !this.maybeStillRunning(t, file, now - mtimeMs)) {
           t.known.set(file.path, size);
+          // Fica fora do escritório, mas a frente da orquestração ainda mostra o modelo dele (só o .meta.json, pequeno).
+          const meta = readSubagentMeta(file.metaPath);
+          this.noteFrontModel(t, meta?.toolUseId, meta?.model);
           continue;
         }
         this.openSub(t, file, firstScan ? 'replay' : 'new');
@@ -749,6 +755,7 @@ export class ClaudeWatcher implements AgentSource {
       for (const line of r.lines) results.push(parseWatchedLine(state, line, { idPrefix: id, now }));
       if (!r.more) break;
     }
+    this.noteFrontModel(t, meta?.toolUseId, state.model ?? meta?.model);
     const finished =
       this.isFinished(t, file, meta) ||
       (mode !== 'new' && concludedByIdle({ now, lastWriteAt: tail.mtimeMs, ended: state.ended, pendingTool: state.pendingTools.size > 0 }));
@@ -781,6 +788,13 @@ export class ClaudeWatcher implements AgentSource {
       this.applySubSummary(sub);
       this.mergeOlderShells(t, id, shellEvents);
     });
+  }
+
+  /** Guarda o modelo real de um subagente e, se mudou, atualiza o painel de orquestração do principal. */
+  private noteFrontModel(t: SessionTracker, toolUseId: string | undefined, model: string | undefined): void {
+    if (!toolUseId || !model || t.frontModels.get(toolUseId) === model) return;
+    t.frontModels.set(toolUseId, model);
+    if (t.state.orch.length) this.applyMainSummary(t);
   }
 
   private applySubSummary(sub: SubTracker): void {
@@ -819,7 +833,10 @@ export class ClaudeWatcher implements AgentSource {
           fresh += res.activities.length;
           this.applyResult(t, sub.id, res, true);
         }
-        if (r.lines.length) this.applySubSummary(sub);
+        if (r.lines.length) {
+          this.applySubSummary(sub);
+          this.noteFrontModel(t, sub.meta?.toolUseId, sub.state.model ?? sub.meta?.model);
+        }
         if (!r.more) break;
       }
       if (office.isSubDone(sub.id)) {

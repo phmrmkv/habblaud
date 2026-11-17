@@ -117,7 +117,11 @@ export function pushOrchEvents(list: OrchEvent[], events: readonly OrchEvent[]):
  * Visão da orquestração mais recente. Uma orquestração começa num "[orquestração] título" ou, sem ele,
  * na primeira frente disparada depois do fim da anterior. Sem nenhuma frente, não há o que mostrar.
  */
-export function buildOrchestration(events: readonly OrchEvent[]): OrchestrationInfo | undefined {
+export function buildOrchestration(
+  events: readonly OrchEvent[],
+  /** Modelo real do subagente de uma chamada (do transcript dele): vale mais que o apelido pedido na chamada. */
+  modelOf?: (toolUseId: string) => string | undefined,
+): OrchestrationInfo | undefined {
   type Cur = { info: OrchestrationInfo; byTool: Map<string, number>; current: Map<number, string>; fronts: Map<number, OrchestrationFront> };
   let cur: Cur | undefined;
   /** Orquestrações abertas, da mais antiga para a mais nova (a visão é a mais nova que tem frentes). */
@@ -156,7 +160,8 @@ export function buildOrchestration(events: readonly OrchEvent[]): OrchestrationI
         const prev = c.fronts.get(e.n);
         if (!prev && c.fronts.size >= MAX_FRONTS) break;
         const front: OrchestrationFront = { n: e.n, topic: e.topic, round: prev ? prev.round + 1 : 1, status: 'working', since: e.at };
-        if (e.model) front.model = e.model;
+        const model = modelOf?.(e.toolUseId) ?? e.model;
+        if (model) front.model = model;
         c.fronts.set(e.n, front);
         c.byTool.set(e.toolUseId, e.n);
         c.current.set(e.n, e.toolUseId);

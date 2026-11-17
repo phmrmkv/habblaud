@@ -20,6 +20,8 @@ export interface SubagentMeta {
   spawnDepth?: number;
   requestShape?: string;
   workflowPhase?: string;
+  /** Modelo que o app escolheu para o subagente ("claude-sonnet-5-5"), mesmo quando a chamada pediu só "sonnet". */
+  model?: string;
 }
 
 /** Sem escrita há 5 s depois de um end_turn: concluiu. */
@@ -83,6 +85,8 @@ export function parseSubagentMeta(raw: string): SubagentMeta | undefined {
     if (typeof j.spawnDepth === 'number') meta.spawnDepth = j.spawnDepth;
     if (requestShape) meta.requestShape = requestShape;
     if (workflowPhase) meta.workflowPhase = workflowPhase;
+    const model = str(j.pickedEffortModel);
+    if (model) meta.model = model.slice(0, 60);
     return meta;
   } catch {
     return undefined;

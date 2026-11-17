@@ -82,6 +82,16 @@ describe('parseOrchestrationText', () => {
 describe('buildOrchestration', () => {
   const spawn = (at: number, toolUseId: string, n: number, topic = `tema ${n}`): OrchEvent => ({ t: 'spawn', at, toolUseId, n, topic, model: 'sonnet' });
 
+  it('mostra o modelo real do subagente quando ele é conhecido, senão o apelido da chamada', () => {
+    const events: OrchEvent[] = [spawn(1, 'a', 1), spawn(1, 'b', 2), { t: 'spawn', at: 1, toolUseId: 'c', n: 3, topic: 'sem modelo' }];
+    const real = new Map([
+      ['a', 'claude-sonnet-5-5'],
+      ['c', 'claude-opus-5-5'],
+    ]);
+    const o = buildOrchestration(events, (id) => real.get(id))!;
+    expect(o.fronts.map((f) => f.model)).toEqual(['claude-sonnet-5-5', 'sonnet', 'claude-opus-5-5']);
+  });
+
   it('acompanha frentes, entregas, vereditos e a nova rodada', () => {
     const events: OrchEvent[] = [
       { t: 'start', at: 1, title: 'Revisar a central' },
