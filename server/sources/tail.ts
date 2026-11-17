@@ -121,10 +121,39 @@ export class FileTail {
   private readonly maxChunk: number;
 
   constructor(
-    readonly path: string,
+    private _path: string,
     opts: { maxChunk?: number } = {},
   ) {
     this.maxChunk = opts.maxChunk ?? 8 * 1024 * 1024;
+  }
+
+  get path(): string {
+    return this._path;
+  }
+
+  /**
+   * O mesmo arquivo passou a morar em outro caminho (o Claude Code move o transcript quando a sessão troca de
+   * pasta): continua do mesmo ponto. Se ele chegou por cópia (outro inode) mas com o mesmo começo e pelo menos o que
+   * já foi lido, vale como o mesmo arquivo; senão, a próxima leitura detecta a troca e recomeça do início.
+   */
+  relocate(path: string): void {
+    this._path = path;
+    let fd: number;
+    try {
+      fd = openSync(path, 'r');
+    } catch {
+      return;
+    }
+    try {
+      const st = fstatSync(fd);
+      if (st.ino === this.ino || st.size < this.offset) return;
+      if (this.head && !readHead(fd, this.head.length).equals(this.head)) return;
+      this.ino = st.ino;
+      this.birthtimeMs = st.birthtimeMs;
+      this.mtimeMs = st.mtimeMs;
+    } finally {
+      closeSync(fd);
+    }
   }
 
   /**

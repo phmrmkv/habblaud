@@ -151,6 +151,8 @@ const CLOSE_AFTER_MISSING_MS = 1_500;
  * a folga cobre a notificação de término ainda a caminho do transcript.
  */
 const IDLE_CLEARS_SHELLS_MS = 30_000;
+/** Transcript quieto por este tempo: confere (no máximo uma vez nesse intervalo) se a sessão trocou de pasta. */
+const RELOCATE_QUIET_MS = 10_000;
 
 function addBounded(set: Set<string>, v: string): void {
   set.add(v);
@@ -433,20 +435,39 @@ export class ClaudeWatcher implements AgentSource {
     const now = this.now();
     if (now < t.nextResolveAt) return undefined;
     t.nextResolveAt = now + 3_000;
+    return this.locateTranscript(t)?.path;
+  }
+
+  /**
+   * Onde está o transcript da sessão agora: a pasta do cwd do registro ou, se não, qualquer pasta de projects/ com
+   * o sessionId (caminhos longos são abreviados pelo Claude Code, e a troca de pasta no app move o arquivo). Havendo
+   * mais de um, vale o escrito por último.
+   */
+  private locateTranscript(t: SessionTracker): { path: string; mtimeMs: number } | undefined {
     const name = `${t.sessionId}.jsonl`;
     const projects = join(t.dir, 'projects');
+    const stat = (path: string) => {
+      try {
+        return { path, mtimeMs: statSync(path).mtimeMs };
+      } catch {
+        return undefined;
+      }
+    };
     const expected = join(projects, encodeCwd(t.entry.cwd), name);
-    if (existsSync(expected)) return expected;
-    // Caminhos longos podem ser abreviados pelo Claude Code: procura pelo sessionId.
+    let best = stat(expected);
+    // Sem histórico de troca de pasta, a pasta do cwd basta (evita varrer projects/ a cada sessão nova).
+    if (best && !t.tail) return best;
     try {
       for (const d of readdirSync(projects)) {
         const p = join(projects, d, name);
-        if (existsSync(p)) return p;
+        if (p === expected) continue;
+        const found = stat(p);
+        if (found && (!best || found.mtimeMs > best.mtimeMs)) best = found;
       }
     } catch {
       // projects/ ainda não existe
     }
-    return undefined;
+    return best;
   }
 
   private pumpMain(t: SessionTracker): void {
@@ -458,6 +479,8 @@ export class ClaudeWatcher implements AgentSource {
       this.watchSession(t);
       return;
     }
+    let grew = false;
+    let missing = false;
     for (let i = 0; i < 4; i++) {
       const r = t.tail.read();
       if (r.reset) {
@@ -465,10 +488,52 @@ export class ClaudeWatcher implements AgentSource {
         this.loadMain(t, t.tail.path);
         return;
       }
+      if (r.missing) missing = true;
       this.applyMainLines(t, r.lines, true);
-      if (r.lines.length) this.applyMainSummary(t);
+      if (r.lines.length) {
+        grew = true;
+        this.applyMainSummary(t);
+      }
       if (!r.more) break;
     }
+    if (!grew && this.followMove(t, missing)) this.pumpMain(t);
+  }
+
+  /**
+   * A sessão trocou de pasta no app (change_directory): o Claude Code move o transcript (e a pasta <sessionId>/
+   * com os subagentes) para a pasta de projects/ do cwd novo. Quando o arquivo some, ou fica quieto enquanto outra
+   * pasta tem um transcript mais novo com o mesmo sessionId, o rastreador passa a ler de lá — mesmo agente, mesmo
+   * estado acumulado (orquestração, tarefas), do ponto em que parou. Devolve true se mudou de caminho.
+   */
+  private followMove(t: SessionTracker, missing: boolean): boolean {
+    const tail = t.tail;
+    if (!tail || !t.transcriptPath) return false;
+    const now = this.now();
+    if (!missing && now - tail.mtimeMs < RELOCATE_QUIET_MS) return false;
+    if (now < t.nextResolveAt) return false;
+    t.nextResolveAt = now + (missing ? 3_000 : RELOCATE_QUIET_MS);
+    const found = this.locateTranscript(t);
+    if (!found || found.path === t.transcriptPath) return false;
+    if (!missing && found.mtimeMs <= tail.mtimeMs) return false;
+    this.relocate(t, found.path);
+    return true;
+  }
+
+  private relocate(t: SessionTracker, path: string): void {
+    const oldDir = sessionDirOf(t.transcriptPath!);
+    const newDir = sessionDirOf(path);
+    const move = (p: string) => (p.startsWith(oldDir) ? newDir + p.slice(oldDir.length) : p);
+    log.info(tr('Transcript da sessão {0} mudou de pasta: {1}', [t.key, path]));
+    t.transcriptPath = path;
+    t.tail!.relocate(path);
+    for (const sub of t.subs.values()) {
+      sub.file = { ...sub.file, path: move(sub.file.path), metaPath: move(sub.file.metaPath) };
+      sub.tail.relocate(sub.file.path);
+    }
+    t.known = new Map([...t.known].map(([p, size]) => [move(p), size]));
+    t.journals.clear();
+    this.closeWatchers(t);
+    this.watchSession(t);
   }
 
   /** Lê o fim do transcript (≈1 MB) e agenda a leitura do começo em segundo plano. */

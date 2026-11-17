@@ -1,5 +1,5 @@
 // Integração: registro + transcript + subagentes em um config dir temporário.
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentInfo, Notice } from '../../shared/types';
@@ -742,5 +742,90 @@ describe('ClaudeWatcher — shell lançado no começo de um transcript maior que
       c.watcher.stop();
       c.tmp.cleanup();
     }
+  });
+});
+
+describe('ClaudeWatcher — sessão que troca de pasta (change_directory no app)', () => {
+  let c: Ctx;
+  beforeEach(() => {
+    c = setup();
+  });
+  afterEach(() => {
+    c.watcher.stop();
+    c.tmp.cleanup();
+  });
+
+  const OTHER = '/projetos/outro';
+  const projectDir = (cwd: string) => join(c.dir, 'projects', encodeCwd(cwd));
+
+  it('transcript movido para a pasta nova: mesmo agente, orquestração e subagente continuam atualizando', () => {
+    writeLines(c.transcript('sess-a'), [
+      L.raw('ai-title', { aiTitle: 'Carrinho de compras' }),
+      L.prompt('Orquestre a revisão', { at: c.now() - 5000 }),
+      L.assistant(
+        [
+          L.text('[orquestração] Revisar o carrinho'),
+          L.tool('toolu_f', 'Agent', { description: 'Frente 1: totais', subagent_type: 'general-purpose', model: 'sonnet', prompt: 'x' }),
+        ],
+        { at: c.now() - 4000 },
+      ),
+    ]);
+    c.subFile('sess-a', 'f1', { agentType: 'general-purpose', description: 'Frente 1: totais', toolUseId: 'toolu_f', spawnDepth: 1, requestShape: 'foreground' }, [
+      L.prompt('Confira os totais', { agentId: 'f1' }),
+      L.assistant([L.tool('g1', 'Grep', { pattern: 'total' })], { agentId: 'f1' }),
+    ]);
+    c.openSession(100, 'sess-a');
+    c.watcher.boot();
+    const id = '.claude:100';
+    expect(c.agent('sess-a:f1')?.status).toBe('working');
+    expect(c.agent(id)!.orchestration?.fronts[0]).toMatchObject({ n: 1, status: 'working' });
+
+    // O app move o transcript e a pasta da sessão (com os subagentes) para a pasta do cwd novo.
+    mkdirSync(projectDir(OTHER), { recursive: true });
+    const moved = join(projectDir(OTHER), 'sess-a.jsonl');
+    renameSync(c.transcript('sess-a'), moved);
+    renameSync(join(projectDir(CWD), 'sess-a'), join(projectDir(OTHER), 'sess-a'));
+    const movedSub = join(projectDir(OTHER), 'sess-a', 'subagents', 'agent-f1.jsonl');
+    appendLines(movedSub, [L.assistant([L.tool('e1', 'Edit', { file_path: `${OTHER}/src/Cart.tsx` })], { agentId: 'f1' })]);
+    appendLines(moved, [L.assistant([L.tool('r1', 'Read', { file_path: `${OTHER}/README.md` })])]);
+    c.advance(3_000);
+    c.poll();
+
+    expect(c.watcher.transcriptPathOf(id)).toBe(moved);
+    expect(c.agent(id)!.activity?.text).toBe('Lendo README.md');
+    expect(c.agent('sess-a:f1')!.activity?.text).toBe('Editando Cart.tsx');
+    expect(c.agents().filter((a) => a.kind === 'main')).toHaveLength(1);
+
+    appendLines(moved, [
+      L.result('toolu_f', 'totais ok', { toolUseResult: { status: 'completed', agentId: 'f1' } }),
+      L.assistant([L.text('[avaliação] Frente 1: aprovado — conferido\n[orquestração] concluída — tudo certo')]),
+    ]);
+    c.poll();
+    const o = c.agent(id)!.orchestration!;
+    expect(o.title).toBe('Revisar o carrinho');
+    expect(o.fronts[0]).toMatchObject({ status: 'approved', reason: 'conferido' });
+    expect(o.endedAt).toBeDefined();
+    expect(c.agent('sess-a:f1')!.status).toBe('done');
+    expect(c.agent(id)!.title).toBe('Carrinho de compras');
+  });
+
+  it('cópia que fica para trás: quieto aqui e mais novo em outra pasta, passa a ler o mais novo', () => {
+    writeLines(c.transcript('sess-a'), [L.prompt('Começa aqui', { at: c.now() - 5000 })]);
+    c.openSession(100, 'sess-a');
+    c.watcher.boot();
+    const id = '.claude:100';
+    mkdirSync(projectDir(OTHER), { recursive: true });
+    const copy = join(projectDir(OTHER), 'sess-a.jsonl');
+    copyFileSync(c.transcript('sess-a'), copy);
+    appendLines(copy, [L.assistant([L.tool('r1', 'Read', { file_path: `${OTHER}/README.md` })])]);
+    // Antigo com mtime de 1 min atrás; o novo acabou de ser escrito.
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(c.transcript('sess-a'), old, old);
+    c.poll();
+    expect(c.watcher.transcriptPathOf(id)).toBe(c.transcript('sess-a'));
+    c.advance(10_000);
+    c.poll();
+    expect(c.watcher.transcriptPathOf(id)).toBe(copy);
+    expect(c.agent(id)!.activity?.text).toBe('Lendo README.md');
   });
 });

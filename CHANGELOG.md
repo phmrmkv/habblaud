@@ -23,6 +23,14 @@ do meio (0.**3**.0).
   transcript como foi chamada, enquanto o texto da resposta pode ser gravado só como resumo. Tudo vem do
   transcript real. O modo demonstração (`?mock=1`) inclui orquestrações de exemplo.
 
+### Corrigido
+
+- **Sessão que troca de pasta no app continua atualizando.** Quando uma sessão do app do Claude muda de pasta de
+  trabalho, o Claude Code move o transcript (e a pasta dos subagentes) para a pasta de projetos nova, e o Habblaud
+  ficava lendo o caminho antigo: o agente e a orquestração congelavam no último estado. Agora o Habblaud acha o
+  transcript pelo id da sessão na pasta nova e continua do ponto em que parou, com o mesmo personagem, as mesmas
+  tarefas e a mesma orquestração.
+
 ## [1.0.3] - 2026-10-16
 
 ### Corrigido
