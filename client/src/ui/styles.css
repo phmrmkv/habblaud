@@ -11281,7 +11281,9 @@ html.is-replay #world {
   height: 22px;
   border: 1px solid currentColor;
   border-radius: 50%;
-  font: 600 11px/1 var(--font-px);
+  /* Fonte da interface: na pixelada, em 11px, o 2 parece 8 e o 5 parece S. */
+  font: 700 11px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
   color: var(--ui-faint);
 }
 
